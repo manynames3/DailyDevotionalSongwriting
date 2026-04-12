@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Songs from the Secret Place</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsmediatags@3.9.7/dist/jsmediatags.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Bebas+Neue&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -207,6 +208,39 @@ body.admin-mode .a-delete{display:flex;}
 .submit-btn:hover{opacity:.88;}
 .submit-btn:disabled{opacity:.35;cursor:not-allowed;}
 .up-status{text-align:center;margin-top:.75rem;font-size:.78rem;font-weight:700;color:var(--amber);min-height:1rem;}
+
+/* DRAG & DROP ZONES */
+.drop-zone{
+  width:100%;
+  border:1.5px dashed rgba(232,168,50,.3);
+  background:rgba(255,255,255,.02);
+  padding:1.4rem 1rem;
+  text-align:center;
+  cursor:pointer;
+  transition:all .2s;
+  position:relative;
+}
+.drop-zone:hover,.drop-zone.drag-over{
+  border-color:var(--amber);
+  background:rgba(232,168,50,.06);
+}
+.drop-zone input[type="file"]{
+  position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;
+}
+.drop-zone-icon{font-size:1.4rem;margin-bottom:.4rem;color:var(--amber-dim);}
+.drop-zone-text{font-size:.78rem;font-weight:700;color:var(--muted);line-height:1.5;}
+.drop-zone-text span{color:var(--amber);text-decoration:underline;}
+.drop-zone-filename{
+  font-size:.78rem;font-weight:700;color:var(--amber);
+  margin-top:.5rem;display:none;
+}
+.drop-zone-filename.show{display:block;}
+
+/* ARTWORK PREVIEW FROM MP3 */
+.extracted-art-wrap{display:none;margin-top:.75rem;align-items:center;gap:.75rem;}
+.extracted-art-wrap.show{display:flex;}
+.extracted-art-wrap img{width:56px;height:56px;border-radius:50%;object-fit:cover;border:2px solid var(--amber);}
+.extracted-art-label{font-size:.72rem;font-weight:700;color:var(--amber);}
 .gate-wrap{max-width:380px;margin:5rem auto;text-align:center;}
 .gate-wrap h2{font-family:'Libre Baskerville',serif;font-size:2.1rem;font-weight:700;color:var(--warm-white);margin-bottom:.4rem;}
 .gate-wrap p{font-size:.82rem;font-weight:600;color:var(--muted);margin-bottom:2rem;}
@@ -319,18 +353,29 @@ body.admin-mode .a-delete{display:flex;}
   <div id="view-admin-upload" class="view" style="display:none">
     <div class="admin-wrap">
       <h2 class="admin-h">Upload Today's Song</h2>
-      <p class="admin-sub">Add a new devotional — lyrics, audio, and artwork.</p>
+      <p class="admin-sub">Add a new devotional — drop your MP3 and fill in the details.</p>
       <div class="form-row">
         <div class="field"><label>Song Title</label><input type="text" id="uTitle" placeholder="e.g. Still Waters"/></div>
         <div class="field"><label>Entry Date</label><input type="date" id="uDate"/></div>
       </div>
       <div class="field"><label>Scripture Reference</label><input type="text" id="uScripture" placeholder="e.g. Psalm 23:2"/></div>
-      <div class="field"><label>MP3 / Audio File</label><input type="file" id="uAudio" accept="audio/*"/></div>
+
+      <!-- MP3 DROP ZONE -->
       <div class="field">
-        <label>Album Artwork (optional)</label>
-        <input type="file" id="uArt" accept="image/*" onchange="previewArt()"/>
-        <div class="art-preview" id="artPreview"><img id="artPreviewImg"/></div>
+        <label>MP3 / Audio File</label>
+        <div class="drop-zone" id="audioDrop">
+          <input type="file" id="uAudio" accept="audio/*" onchange="onAudioSelected(this.files[0])"/>
+          <div class="drop-zone-icon">🎵</div>
+          <div class="drop-zone-text">Drop your MP3 here or <span>browse</span></div>
+          <div class="drop-zone-filename" id="audioFilename"></div>
+        </div>
+        <!-- extracted artwork preview -->
+        <div class="extracted-art-wrap" id="extractedArtWrap">
+          <img id="extractedArtImg"/>
+          <div class="extracted-art-label">✦ Album artwork extracted from MP3</div>
+        </div>
       </div>
+
       <div class="field"><label>Lyrics</label>
         <textarea id="uLyrics" placeholder="Paste lyrics here..."></textarea>
       </div>
@@ -731,19 +776,67 @@ async function executeDelete() {
 }
 
 // ── UPLOAD ──
-function previewArt() {
-  var f = document.getElementById('uArt').files[0];
-  if (!f) return;
-  document.getElementById('artPreviewImg').src = URL.createObjectURL(f);
-  document.getElementById('artPreview').classList.add('show');
+var extractedArtBlob = null; // stores artwork extracted from MP3
+
+// Drag & drop for audio zone
+(function() {
+  var zone = document.getElementById('audioDrop');
+  if (!zone) return;
+  zone.addEventListener('dragover', function(e){ e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', function(){ zone.classList.remove('drag-over'); });
+  zone.addEventListener('drop', function(e){
+    e.preventDefault(); zone.classList.remove('drag-over');
+    var file = e.dataTransfer.files[0];
+    if (file) { document.getElementById('uAudio').files; onAudioSelected(file); }
+  });
+  // also wire the drop onto the file input for drag-drop reassignment
+  zone.addEventListener('drop', function(e){
+    var dt = e.dataTransfer;
+    if (dt && dt.files.length) {
+      var input = document.getElementById('uAudio');
+      // Can't set .files directly — store reference manually
+      zone._droppedFile = dt.files[0];
+    }
+  });
+})();
+
+function onAudioSelected(file) {
+  if (!file) return;
+  // store dropped file reference on the element
+  document.getElementById('audioDrop')._selectedFile = file;
+  // show filename
+  var fn = document.getElementById('audioFilename');
+  fn.textContent = '✓ ' + file.name;
+  fn.classList.add('show');
+  // try to extract ID3 artwork
+  extractedArtBlob = null;
+  document.getElementById('extractedArtWrap').classList.remove('show');
+  try {
+    window.jsmediatags.read(file, {
+      onSuccess: function(tag) {
+        var pic = tag.tags && tag.tags.picture;
+        if (pic) {
+          var bytes = new Uint8Array(pic.data);
+          var blob = new Blob([bytes], {type: pic.format});
+          extractedArtBlob = blob;
+          var url = URL.createObjectURL(blob);
+          document.getElementById('extractedArtImg').src = url;
+          document.getElementById('extractedArtWrap').classList.add('show');
+        }
+      },
+      onError: function() { /* no tags, no problem */ }
+    });
+  } catch(e) { /* jsmediatags unavailable */ }
 }
+
 async function handleUpload() {
   var title    = document.getElementById('uTitle').value.trim();
   var date     = document.getElementById('uDate').value;
   var scripture= document.getElementById('uScripture').value.trim();
   var lyrics   = document.getElementById('uLyrics').value.trim();
-  var audioFile= document.getElementById('uAudio').files[0];
-  var artFile  = document.getElementById('uArt').files[0];
+  // get file — either from input or from drag-drop reference
+  var inputEl  = document.getElementById('uAudio');
+  var audioFile= document.getElementById('audioDrop')._selectedFile || (inputEl.files && inputEl.files[0]);
   if (!title||!date) { toast('Title and date required'); return; }
   var btn=document.getElementById('submitBtn'), status=document.getElementById('upStatus');
   btn.disabled=true;
@@ -755,11 +848,12 @@ async function handleUpload() {
     if (res.error) { toast('Audio upload failed'); btn.disabled=false; status.textContent=''; return; }
     audio_url = sb.storage.from(BUCKET_AUDIO).getPublicUrl(path).data.publicUrl;
   }
-  if (artFile) {
+  // upload extracted artwork if found
+  if (extractedArtBlob) {
     status.textContent='Uploading artwork…';
-    var ext2=artFile.name.split('.').pop(), path2=date+'-art-'+Date.now()+'.'+ext2;
-    var res2=await sb.storage.from(BUCKET_ART).upload(path2, artFile, {upsert:true});
-    if (!res2.error) art_url = sb.storage.from(BUCKET_ART).getPublicUrl(path2).data.publicUrl;
+    var artPath = date+'-art-'+Date.now()+'.jpg';
+    var res2 = await sb.storage.from(BUCKET_ART).upload(artPath, extractedArtBlob, {upsert:true, contentType:'image/jpeg'});
+    if (!res2.error) art_url = sb.storage.from(BUCKET_ART).getPublicUrl(artPath).data.publicUrl;
   }
   status.textContent='Saving…';
   var res3=await sb.from('devotionals').insert({title,entry_date:date,scripture,lyrics,audio_url,art_url});
@@ -767,9 +861,13 @@ async function handleUpload() {
   else {
     toast('Published ✦');
     ['uTitle','uScripture','uLyrics'].forEach(function(id){ document.getElementById(id).value=''; });
-    document.getElementById('uAudio').value=''; document.getElementById('uArt').value='';
+    document.getElementById('uAudio').value='';
     document.getElementById('uDate').valueAsDate=new Date();
-    document.getElementById('artPreview').classList.remove('show');
+    document.getElementById('audioDrop')._selectedFile = null;
+    document.getElementById('audioFilename').textContent='';
+    document.getElementById('audioFilename').classList.remove('show');
+    document.getElementById('extractedArtWrap').classList.remove('show');
+    extractedArtBlob = null;
     await loadEntries(); showView('archive');
   }
   btn.disabled=false; status.textContent='';
