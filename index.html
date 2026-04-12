@@ -443,7 +443,7 @@ const BUCKET_ART     = 'devotional-art';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 const audio = document.getElementById('audioEl');
 let entries = [], current = null, playing = false, isAdmin = false, pendingDeleteId = null, loopOn = false;
-let audioCtx, analyser, audioSrc, audioInited = false;
+// Web Audio vars removed — using simulated visualizer
 let waveformBars = [], waveformW = 0;
 
 // ── INIT ──
@@ -499,9 +499,13 @@ function extractColor(imgEl) {
   } catch(e) {}
 }
 
-// ── VISUALIZER ──
+// ── VISUALIZER (simulated — no Web Audio dependency) ──
 var vizCanvas = document.getElementById('vizCanvas');
 var vizCtx = vizCanvas.getContext('2d');
+// Pre-bake random bar heights so each bar has its own personality
+var barSeeds = [];
+for (var _i=0; _i<80; _i++) { barSeeds.push(Math.random()*Math.PI*2); }
+
 function drawViz() {
   requestAnimationFrame(drawViz);
   vizCtx.clearRect(0, 0, 300, 300);
@@ -509,18 +513,28 @@ function drawViz() {
   var r = getComputedStyle(document.documentElement).getPropertyValue('--dyn-r').trim() || 232;
   var g = getComputedStyle(document.documentElement).getPropertyValue('--dyn-g').trim() || 168;
   var b = getComputedStyle(document.documentElement).getPropertyValue('--dyn-b').trim() || 50;
-  var freqData = null;
-  if (analyser) { freqData = new Uint8Array(analyser.frequencyBinCount); analyser.getByteFrequencyData(freqData); }
+  var t = Date.now();
   for (var i = 0; i < bars; i++) {
     var angle = (i/bars)*Math.PI*2 - Math.PI/2;
-    var val = 0;
-    if (freqData && playing) { val = freqData[Math.floor((i/bars)*freqData.length*.6)] / 255; }
-    var barH = playing ? val*55+2 : (Math.sin(Date.now()*.0008+i*.18)*.5+.5)*3+1;
-    var alpha = playing ? .1+val*.75 : .03+Math.sin(Date.now()*.001+i*.2)*.03;
+    var barH, alpha;
+    if (playing) {
+      // Lively multi-wave simulation when playing
+      var wave1 = Math.sin(t*0.002 + barSeeds[i]) * 0.5 + 0.5;
+      var wave2 = Math.sin(t*0.0035 + i*0.22) * 0.4 + 0.4;
+      var wave3 = Math.sin(t*0.001 + i*0.08) * 0.3 + 0.3;
+      var val = (wave1*0.45 + wave2*0.35 + wave3*0.2);
+      barH = 4 + val * 48;
+      alpha = 0.15 + val * 0.7;
+    } else {
+      // Gentle idle shimmer
+      var shimmer = Math.sin(t*0.0008 + barSeeds[i]) * 0.5 + 0.5;
+      barH = 1.5 + shimmer * 3;
+      alpha = 0.03 + shimmer * 0.05;
+    }
     var x1=cx+Math.cos(angle)*innerR, y1=cy+Math.sin(angle)*innerR;
     var x2=cx+Math.cos(angle)*(innerR+barH), y2=cy+Math.sin(angle)*(innerR+barH);
     var grad = vizCtx.createLinearGradient(x1,y1,x2,y2);
-    grad.addColorStop(0, 'rgba('+r+','+g+','+b+','+alpha*.4+')');
+    grad.addColorStop(0, 'rgba('+r+','+g+','+b+','+(alpha*0.4)+')');
     grad.addColorStop(1, 'rgba('+r+','+g+','+b+','+alpha+')');
     vizCtx.strokeStyle = grad;
     vizCtx.lineWidth = playing ? 2.5 : 1.5;
@@ -529,20 +543,10 @@ function drawViz() {
   }
 }
 
-// ── WEB AUDIO (attached after play succeeds) ──
-function tryInitAudio() {
-  if (audioInited) { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); return; }
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.8;
-    audioSrc = audioCtx.createMediaElementSource(audio);
-    audioSrc.connect(analyser);
-    analyser.connect(audioCtx.destination);
-    audioInited = true;
-  } catch(e) { console.warn('Visualizer unavailable:', e); }
-}
+// ── WEB AUDIO ──
+// createMediaElementSource intentionally NOT used — it causes cross-origin
+// audio to silently fail. Visualizer uses simulated animation instead.
+function tryInitAudio() { /* intentionally empty — audio plays natively */ }
 
 // ── WAVEFORM ──
 function hashStr(s) { var h=0; for(var i=0;i<s.length;i++){h=Math.imul(31,h)+s.charCodeAt(i)|0;} return Math.abs(h); }
