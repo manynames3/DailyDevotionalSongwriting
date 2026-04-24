@@ -136,6 +136,13 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:2px;}
 .spd{font-family:'Bebas Neue',sans-serif;font-size:.75rem;letter-spacing:.1em;padding:.28rem .55rem;background:transparent;border:1px solid rgba(232,168,50,.18);color:var(--muted);cursor:pointer;border-radius:2px;transition:all .2s;}
 .spd:hover{border-color:rgba(232,168,50,.5);color:var(--readable);}
 .spd.active{background:rgba(232,168,50,.12);border-color:var(--amber);color:var(--amber);}
+.volume-wrap{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap;}
+.volume-btn{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:999px;background:none;border:1.5px solid rgba(232,168,50,.25);color:var(--readable);cursor:pointer;transition:all .2s;font-size:.9rem;flex-shrink:0;}
+.volume-btn:hover{border-color:var(--amber);color:var(--amber);background:rgba(232,168,50,.08);}
+.volume-slider{appearance:none;-webkit-appearance:none;width:112px;height:4px;border-radius:999px;background:linear-gradient(to right,var(--amber) 0%,var(--amber) var(--vol-pct,85%),rgba(232,168,50,.18) var(--vol-pct,85%),rgba(232,168,50,.18) 100%);outline:none;cursor:pointer;}
+.volume-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:13px;height:13px;border-radius:50%;background:var(--amber);border:none;box-shadow:0 0 0 2px rgba(28,17,8,.9);}
+.volume-slider::-moz-range-thumb{width:13px;height:13px;border-radius:50%;background:var(--amber);border:none;box-shadow:0 0 0 2px rgba(28,17,8,.9);}
+.volume-readout{font-family:'Bebas Neue',sans-serif;font-size:.72rem;letter-spacing:.16em;color:var(--readable);min-width:42px;text-align:right;}
 .lyrics-pill{font-family:'Bebas Neue',sans-serif;font-size:.88rem;letter-spacing:.18em;padding:.42rem 1rem;background:transparent;border:1.5px solid rgba(232,168,50,.3);color:var(--amber);cursor:pointer;transition:all .2s;border-radius:2px;white-space:nowrap;}
 .lyrics-pill:hover{background:rgba(232,168,50,.1);}
 @media(max-width:760px){
@@ -368,6 +375,11 @@ body.admin-mode .a-delete{display:flex;}
               <span>⟳</span><span>Loop</span>
             </button>
             <button class="lyrics-pill" onclick="openModal()" title="Open lyrics in a modal">Lyrics ↗</button>
+            <div class="volume-wrap">
+              <button class="volume-btn" id="volumeBtn" onclick="toggleMute()" title="Mute or unmute volume" aria-label="Mute volume">🔊</button>
+              <input class="volume-slider" id="volumeSlider" type="range" min="0" max="100" value="85" oninput="setVolume(this.value)" aria-label="Volume"/>
+              <span class="volume-readout" id="volumeReadout">85%</span>
+            </div>
             <div class="speed-wrap">
               <span class="speed-label">Speed</span>
               <div class="speed-group">
@@ -495,7 +507,7 @@ const SUPABASE_ANON  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmF
 const ADMIN_PASSWORD = 'grace2024';
 const BUCKET_AUDIO   = 'devotional-audio';
 const BUCKET_ART     = 'devotional-art';
-const DEVOTIONALS_REST_URL = SUPABASE_URL + '/rest/v1/devotionals?select=*&order=entry_date.desc';
+const DEVOTIONALS_REST_URL = SUPABASE_URL + '/rest/v1/devotionals?select=*&order=entry_date.desc&apikey=' + encodeURIComponent(SUPABASE_ANON);
 
 // ── STATE ──
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
@@ -504,14 +516,17 @@ let entries = [], current = null, playing = false, isAdmin = false, pendingDelet
 // Web Audio vars removed — using simulated visualizer
 let waveformBars = [], waveformW = 0;
 let entriesLoaded = false;
+let previousVolume = 0.85;
 
 // ── INIT ──
 document.getElementById('uDate').valueAsDate = new Date();
 buildShelf();
 applyTimeOfDay();
 drawViz();
+audio.volume = previousVolume;
 updateAdminCta();
 updateArchiveMeta();
+syncVolumeUI();
 loadEntries();
 
 // ── TIME OF DAY ──
@@ -562,13 +577,14 @@ function extractColor(imgEl) {
 
 // ── VISUALIZER (simulated — no Web Audio dependency) ──
 var vizCanvas = document.getElementById('vizCanvas');
-var vizCtx = vizCanvas.getContext('2d');
+var vizCtx = vizCanvas && typeof vizCanvas.getContext === 'function' ? vizCanvas.getContext('2d') : null;
 // Pre-bake random bar heights so each bar has its own personality
 var barSeeds = [];
 for (var _i=0; _i<80; _i++) { barSeeds.push(Math.random()*Math.PI*2); }
 
 function drawViz() {
   requestAnimationFrame(drawViz);
+  if (!vizCtx) return;
   vizCtx.clearRect(0, 0, 300, 300);
   var cx=150, cy=150, innerR=113, bars=80;
   var r = getComputedStyle(document.documentElement).getPropertyValue('--dyn-r').trim() || 232;
@@ -706,34 +722,46 @@ function showView(name) {
 }
 
 // ── LOAD ENTRIES ──
-async function fetchEntriesViaClient() {
-  var res = await sb.from('devotionals').select('*').order('entry_date', {ascending:false});
+function fetchJsonViaXhr(url, timeoutMs) {
+  return new Promise(function(resolve, reject) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.responseType = 'json';
+    xhr.timeout = timeoutMs;
+    xhr.onload = function() {
+      if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response || JSON.parse(xhr.responseText || '[]'));
+      else reject(new Error('xhr-' + xhr.status));
+    };
+    xhr.onerror = function() { reject(new Error('xhr-network')); };
+    xhr.ontimeout = function() { reject(new Error('xhr-timeout')); };
+    xhr.send();
+  });
+}
+async function fetchEntriesViaClient(timeoutMs) {
+  var res = await Promise.race([
+    sb.from('devotionals').select('*').order('entry_date', {ascending:false}),
+    new Promise(function(_, reject) {
+      setTimeout(function(){ reject(new Error('client-timeout')); }, timeoutMs);
+    })
+  ]);
   if (res.error) throw res.error;
   return res.data || [];
 }
 async function fetchEntriesViaRest(timeoutMs) {
-  var ctrl = new AbortController();
-  var timer = setTimeout(function(){ ctrl.abort(); }, timeoutMs);
-  try {
-    var res = await fetch(DEVOTIONALS_REST_URL, {
-      headers: {
-        apikey: SUPABASE_ANON,
-        Authorization: 'Bearer ' + SUPABASE_ANON
-      },
-      signal: ctrl.signal
-    });
-    if (!res.ok) throw new Error('rest-' + res.status);
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
-  }
+  return await fetchJsonViaXhr(DEVOTIONALS_REST_URL, timeoutMs);
+}
+async function fetchEntriesViaFunction(timeoutMs) {
+  if (!/^https?:$/.test(location.protocol)) throw new Error('function-unavailable');
+  return await fetchJsonViaXhr('/.netlify/functions/devotionals', timeoutMs);
 }
 async function loadEntries(retries) {
   if (retries === undefined) retries = 4;
+  document.getElementById('archiveSummary').textContent = 'Connecting to public archive…';
   try {
     var data = await Promise.any([
-      fetchEntriesViaClient(),
-      fetchEntriesViaRest(45000)
+      fetchEntriesViaFunction(6000),
+      fetchEntriesViaRest(12000),
+      fetchEntriesViaClient(12000)
     ]);
     entries = Array.isArray(data) ? data : [];
     entriesLoaded = true;
@@ -845,6 +873,35 @@ function toggleLoop() {
   document.getElementById('loopBtn').classList.toggle('active', loopOn);
   toast(loopOn ? 'Loop On' : 'Loop Off');
 }
+function syncVolumeUI() {
+  var slider = document.getElementById('volumeSlider');
+  var readout = document.getElementById('volumeReadout');
+  var btn = document.getElementById('volumeBtn');
+  var pct = Math.round((audio.muted ? 0 : audio.volume) * 100);
+  slider.value = pct;
+  slider.style.setProperty('--vol-pct', pct + '%');
+  readout.textContent = pct + '%';
+  btn.textContent = pct === 0 ? '🔇' : (pct < 45 ? '🔉' : '🔊');
+  btn.setAttribute('aria-label', pct === 0 ? 'Unmute volume' : 'Mute volume');
+  btn.title = pct === 0 ? 'Unmute volume' : 'Mute or unmute volume';
+}
+function setVolume(value) {
+  var next = Math.max(0, Math.min(100, parseFloat(value || 0))) / 100;
+  audio.muted = false;
+  audio.volume = next;
+  if (next > 0) previousVolume = next;
+  syncVolumeUI();
+}
+function toggleMute() {
+  if (audio.muted || audio.volume === 0) {
+    audio.muted = false;
+    audio.volume = previousVolume > 0 ? previousVolume : 0.85;
+  } else {
+    previousVolume = audio.volume > 0 ? audio.volume : previousVolume;
+    audio.muted = true;
+  }
+  syncVolumeUI();
+}
 function setSpeed(rate) {
   audio.playbackRate = rate;
   document.querySelectorAll('.spd').forEach(function(b){ b.classList.toggle('active', parseFloat(b.textContent)===rate); });
@@ -856,6 +913,7 @@ audio.onplay = syncPlaybackUI;
 audio.onpause = syncPlaybackUI;
 audio.onloadedmetadata = syncPlaybackUI;
 audio.ondurationchange = syncPlaybackUI;
+audio.onvolumechange = syncVolumeUI;
 audio.onseeked = syncPlaybackUI;
 audio.onemptied = syncPlaybackUI;
 audio.onended = function() {
